@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="io.github.lifecache.LocalCacheTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-02-02T08:47:43.094Z" hostname="Weihuas-MacBook-Air.local" time="0.176">
+  <properties/>
+  <testcase name="testCacheEntry()" classname="io.github.lifecache.LocalCacheTest" time="0.013"/>
+  <testcase name="testCacheOperations()" classname="io.github.lifecache.LocalCacheTest" time="0.001"/>
+  <testcase name="testAdaptiveTtl()" classname="io.github.lifecache.LocalCacheTest" time="0.156"/>
+  <testcase name="testCacheHitAndMiss()" classname="io.github.lifecache.LocalCacheTest" time="0.003"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

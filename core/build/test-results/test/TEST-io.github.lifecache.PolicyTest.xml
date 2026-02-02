@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="io.github.lifecache.PolicyTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-02-02T08:47:43.271Z" hostname="Weihuas-MacBook-Air.local" time="0.006">
+  <properties/>
+  <testcase name="testStepFunctionPolicyCritical()" classname="io.github.lifecache.PolicyTest" time="0.001"/>
+  <testcase name="testStepFunctionPolicy()" classname="io.github.lifecache.PolicyTest" time="0.002"/>
+  <testcase name="testStepFunctionPolicyDegraded()" classname="io.github.lifecache.PolicyTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

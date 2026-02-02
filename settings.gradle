@@ -1,0 +1,4 @@
+rootProject.name = 'lifecache'
+
+include 'core'
+include 'demo'
