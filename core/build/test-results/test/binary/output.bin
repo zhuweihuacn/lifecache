@@ -1,0 +1,6 @@
+	 Health Score: 0.712402975502703
+	Status: DEGRADED
+	allowStaleness: PT17M36S
+	Throttle Rate: 0.0
+	Priority: 2
+	XMetrics: {inference_latency_p95=243.5941644899072, grpc_latency_p95=119.00066720469836}

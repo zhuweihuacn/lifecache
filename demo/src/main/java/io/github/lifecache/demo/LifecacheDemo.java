@@ -1,8 +1,10 @@
 package io.github.lifecache.demo;
 
-import io.github.lifecache.Lifecache;
-import io.github.lifecache.cache.LocalCache;
+import io.github.lifecache.config.QoSOutput;
+import io.github.lifecache.config.QoSOutput.DecisionValue;
+import io.github.lifecache.engine.ConfigurableQoSEngine;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -13,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 🚢 Lifecache Demo - Thundering Herd Simulation with Fallback Strategy
+ * 🚢 Lifecache Demo - Thundering Herd Simulation with JSON Config
  * 
  * <p>Demonstrates adaptive caching with <b>separate</b> fallback under thundering herd conditions:</p>
  * <ul>
@@ -25,16 +27,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>Between bursts: latency recovers → TTL shortens, fallback stops</li>
  * </ul>
  * 
- * <h2>Design Pattern</h2>
- * <pre>{@code
- * // 1. First check if should fallback (independent of cache)
- * if (lifecache.shouldDrop("loadShedding")) {
- *     return FALLBACK_VALUE;  // Don't hit backend or cache
- * }
- * 
- * // 2. Then use cache normally
- * return cache.get(key, () -> backendCall());
- * }</pre>
+ * <h2>Configuration</h2>
+ * <p>All settings loaded from JSON config file: demo-config.json</p>
  */
 public class LifecacheDemo {
     
@@ -57,40 +51,22 @@ public class LifecacheDemo {
     // Background load with normal distribution (mean=100, range 0-500)
     private static volatile int currentRps = 100;
     
-    public static void main(String[] args) throws InterruptedException {
+    // Simple in-memory cache
+    private static final java.util.concurrent.ConcurrentHashMap<String, CacheEntry> cache = 
+        new java.util.concurrent.ConcurrentHashMap<>();
+    
+    public static void main(String[] args) throws InterruptedException, IOException {
         System.out.println("🚢 ========================================");
         System.out.println("🚢 Lifecache - Thundering Herd Demo");
         System.out.println("🚢 ========================================");
+        System.out.println("📄 Loading config from: demo-config.json");
         System.out.println("⚡ Simulating thundering herd every 20 seconds");
         System.out.println("📊 Background: ~100 RPS (normal distribution 0-500)");
         System.out.println("🌊 Thundering herd: 10,000 requests burst");
         System.out.println("⏱️  Demo runs for 5 minutes\n");
         
-        // Create Lifecache with user-defined breakdowns
-        Lifecache lifecache = Lifecache.builder()
-            // Latency → Health score
-            .latencyThreshold(120, 1.0)             // < 120ms = healthy
-            .latencyThreshold(200, 0.75)            // 200ms = degraded
-            .latencyThreshold(400, 0.5)             // 400ms = degraded
-            .latencyThreshold(600, 0.25)            // 600ms = stressed
-            .latencyThreshold(800, 0.0)             // > 800ms = critical
-            // Health score → Cache TTL (step function)
-            .breakdown("cacheTtl", Lifecache.stepFunction(
-                Lifecache.entry(1.0,  Duration.ofSeconds(10)),   // healthy → 10s
-                Lifecache.entry(0.75, Duration.ofMinutes(1)),    // degraded → 1min
-                Lifecache.entry(0.5,  Duration.ofMinutes(2)),    // degraded → 2min
-                Lifecache.entry(0.25, Duration.ofMinutes(3)),    // stressed → 3min
-                Lifecache.entry(0.0,  Duration.ofMinutes(5))     // critical → 5min
-            ))
-            // Health score → Drop rate (aggressive!)
-            // health < 0.95 (P95 > 120ms) → start dropping immediately
-            // health = 0.0 → drop up to 95%
-            .breakdown("loadShedding", Lifecache.dropRate(0.95, 0.95))
-            .metricsWindow(Duration.ofSeconds(5))
-            .build();
-        
-        // Create LocalCache with breakdown name and max TTL
-        LocalCache<String> cache = new LocalCache<>(lifecache, "cacheTtl", Duration.ofMinutes(5));
+        // Load config from JSON
+        ConfigurableQoSEngine engine = ConfigurableQoSEngine.fromResource("demo-config.json");
         
         startTime.set(System.currentTimeMillis());
         
@@ -107,7 +83,7 @@ public class LifecacheDemo {
                 final int requestId = totalRequests.incrementAndGet();
                 requestExecutor.submit(() -> {
                     try {
-                        simulateRequest(lifecache, cache, requestId);
+                        simulateRequest(engine, requestId);
                     } catch (Exception e) {
                         // Ignore
                     }
@@ -117,12 +93,12 @@ public class LifecacheDemo {
         
         // Thundering herd - 10,000 requests every 20 seconds
         scheduler.scheduleAtFixedRate(() -> {
-            triggerThunderingHerd(lifecache, cache, requestExecutor);
+            triggerThunderingHerd(engine, requestExecutor);
         }, 25, 20, TimeUnit.SECONDS);
         
         // Stats printer - every 1 second
         scheduler.scheduleAtFixedRate(() -> {
-            printStats(lifecache, cache);
+            printStats(engine);
         }, 1, 1, TimeUnit.SECONDS);
         
         System.out.println("🌊 Demo running for 5 minutes... Press Ctrl+C to stop\n");
@@ -132,15 +108,13 @@ public class LifecacheDemo {
         
         scheduler.shutdown();
         requestExecutor.shutdown();
-        lifecache.close();
         
         System.out.println("\n🚢 Demo complete!");
         System.out.printf("📊 Total: %d requests, %d thundering herds%n", 
             totalRequests.get(), thunderingHerdCount.get());
     }
     
-    private static void triggerThunderingHerd(Lifecache lifecache, LocalCache<String> cache, 
-                                               ExecutorService executor) {
+    private static void triggerThunderingHerd(ConfigurableQoSEngine engine, ExecutorService executor) {
         int herdNumber = thunderingHerdCount.incrementAndGet();
         System.out.printf("%n⚡⚡⚡ THUNDERING HERD #%d - 10,000 requests incoming! ⚡⚡⚡%n", herdNumber);
         
@@ -149,7 +123,7 @@ public class LifecacheDemo {
             final int requestId = totalRequests.incrementAndGet();
             executor.submit(() -> {
                 try {
-                    simulateRequest(lifecache, cache, requestId);
+                    simulateRequest(engine, requestId);
                 } catch (Exception e) {
                     // Ignore
                 }
@@ -157,72 +131,87 @@ public class LifecacheDemo {
         }
     }
     
-    private static void simulateRequest(Lifecache lifecache, LocalCache<String> cache, int requestId) {
+    private static void simulateRequest(ConfigurableQoSEngine engine, int requestId) {
         windowRequests.incrementAndGet();
         
         // Generate a key randomly from 100,000 possible keys
         String key = "item:" + random.nextInt(100000);
         
+        // Get current QoS decisions
+        QoSOutput output = engine.evaluate();
+        
         // ============================================================
-        // STEP 1: Check fallback FIRST (independent of cache!)
-        // When latency is high, skip backend call entirely
+        // STEP 1: Check load shedding (independent of cache!)
+        // When latency is high, drop requests probabilistically
         // ============================================================
-        if (lifecache.shouldDrop("loadShedding")) {
+        DecisionValue loadSheddingDecision = output.decisions().get("loadShedding");
+        double dropRate = loadSheddingDecision != null ? loadSheddingDecision.asDouble() : 0.0;
+        
+        if (dropRate > 0 && random.nextDouble() < dropRate) {
             // High load - return fallback value, don't touch cache or backend
             windowFallbacks.incrementAndGet();
-            // In real code: return FALLBACK_VALUE here
             return;
         }
         
         // ============================================================
-        // STEP 2: Use cache normally (fallback already checked)
+        // STEP 2: Use cache with adaptive TTL
         // ============================================================
-        LocalCache.CacheResult<String> result = cache.get(key, () -> {
-            // This is the "backend call" - only executed on cache miss
-            int concurrency = latencySimulator.incrementConcurrency();
-            try {
-                latencySimulator.sleep(concurrency);
-                // Return a "computed" result
-                return "result_" + key + "_" + System.currentTimeMillis();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return "error";
-            } finally {
-                latencySimulator.decrementConcurrency();
-            }
-        });
+        DecisionValue cacheTtlDecision = output.decisions().get("cacheTtl");
+        Duration ttl = cacheTtlDecision != null ? cacheTtlDecision.asDuration() : Duration.ofSeconds(10);
         
-        // Track cache results (window-based)
-        if (result.isFromCache()) {
+        // Check cache
+        CacheEntry entry = cache.get(key);
+        if (entry != null && !entry.isExpired()) {
             windowHits.incrementAndGet();
-        } else {
-            windowMisses.incrementAndGet();
+            return;
+        }
+        
+        // Cache miss - call backend
+        windowMisses.incrementAndGet();
+        
+        int concurrency = latencySimulator.incrementConcurrency();
+        try {
+            long latency = latencySimulator.sleepAndGetLatency(concurrency);
+            
+            // Record latency to engine
+            engine.record("latency", latency);
+            
+            // Store in cache with adaptive TTL
+            cache.put(key, new CacheEntry("result_" + key, ttl));
+            
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            latencySimulator.decrementConcurrency();
         }
     }
     
-    private static void printStats(Lifecache lifecache, LocalCache<String> cache) {
+    private static void printStats(ConfigurableQoSEngine engine) {
         // Get window stats and reset
         int requests = windowRequests.getAndSet(0);
         int hits = windowHits.getAndSet(0);
         int misses = windowMisses.getAndSet(0);
         int fallbacks = windowFallbacks.getAndSet(0);
         
-        // Get core output: healthScore (唯一核心输出)
-        double health = lifecache.getHealthScore();
-        Lifecache.Metrics metrics = lifecache.getMetrics();
+        // Get QoS output
+        QoSOutput output = engine.evaluate();
+        double health = output.healthScore();
         
         long uptime = (System.currentTimeMillis() - startTime.get()) / 1000;
         int concurrency = latencySimulator.getCurrentConcurrency();
         
-        // Derived values from healthScore
-        Duration softTtl = lifecache.getBreakdown("cacheTtl");
-        double dropRate = lifecache.getBreakdown("loadShedding");
+        // Get decisions
+        DecisionValue cacheTtlDecision = output.decisions().get("cacheTtl");
+        DecisionValue loadSheddingDecision = output.decisions().get("loadShedding");
+        Duration softTtl = cacheTtlDecision != null ? cacheTtlDecision.asDuration() : Duration.ofSeconds(10);
+        double dropRate = loadSheddingDecision != null ? loadSheddingDecision.asDouble() : 0.0;
         
         int processed = hits + misses + fallbacks;
         double hitRate = processed > 0 ? 100.0 * hits / processed : 0;
         double fallbackRate = (misses + fallbacks) > 0 ? 100.0 * fallbacks / (misses + fallbacks) : 0;
         
-        String statusEmoji = switch (metrics.getStatus()) {
+        String status = getStatus(health);
+        String statusEmoji = switch (status) {
             case "HEALTHY" -> "✅";
             case "DEGRADED" -> "⚠️";
             case "STRESSED" -> "🔶";
@@ -230,27 +219,37 @@ public class LifecacheDemo {
             default -> "❓";
         };
         
+        // Get latency metrics
+        Double p50 = output.metrics().get("latency_p95");
+        Double p95 = output.metrics().get("latency_p95");
+        Double p99 = output.metrics().get("latency_p95");
+        
         System.out.println("\n📈 ========= Lifecache Stats (last 1s) ==========");
         System.out.printf("⏱️  Uptime: %ds | RPS: %d | Concurrency: %d | Herds: %d%n", 
             uptime, requests, concurrency, thunderingHerdCount.get());
         System.out.println("──────────────────────────────────────────────────");
         System.out.printf("📊 Requests: %d | Hits: %d | Misses: %d | Fallbacks: %d%n",
             requests, hits, misses, fallbacks);
-        String cacheSize = cache.maxSize() > 0 
-            ? String.format("%d/%d keys", cache.size(), cache.maxSize())
-            : String.format("%d keys (unlimited)", cache.size());
-        System.out.printf("📉 Hit Rate: %.1f%% | Fallback Rate: %.1f%% | Cache: %s%n", 
-            hitRate, fallbackRate, cacheSize);
+        System.out.printf("📉 Hit Rate: %.1f%% | Fallback Rate: %.1f%% | Cache: %d keys%n", 
+            hitRate, fallbackRate, cache.size());
         System.out.println("──────────────────────────────────────────────────");
-        System.out.printf("⚡ Latency P50/P95/P99: %.0f/%.0f/%.0fms%n",
-            metrics.p50Latency(), metrics.p95Latency(), metrics.p99Latency());
+        if (p95 != null) {
+            System.out.printf("⚡ Latency P95: %.0fms%n", p95);
+        }
         System.out.println("──────────────────────────────────────────────────");
-        System.out.printf("🎯 Health Score: %.2f %s [%s]%n", health, statusEmoji, metrics.getStatus());
+        System.out.printf("🎯 Health Score: %.2f %s [%s]%n", health, statusEmoji, status);
         System.out.printf("⏰ Soft TTL: %s | 🚫 Drop Rate: %.1f%%%n", formatDuration(softTtl), dropRate * 100);
         if (fallbacks > 0) {
             System.out.printf("⚠️  %d requests dropped (returned fallback)%n", fallbacks);
         }
         System.out.println("==================================================");
+    }
+    
+    private static String getStatus(double health) {
+        if (health >= 0.9) return "HEALTHY";
+        if (health >= 0.7) return "DEGRADED";
+        if (health >= 0.4) return "STRESSED";
+        return "CRITICAL";
     }
     
     private static String formatDuration(Duration d) {
@@ -268,13 +267,26 @@ public class LifecacheDemo {
     
     /**
      * Generate RPS with normal distribution.
-     * @param mean the mean value
-     * @param stdDev standard deviation
-     * @param min minimum value (clamped)
-     * @param max maximum value (clamped)
      */
     private static int generateNormalRps(double mean, double stdDev, int min, int max) {
         double value = mean + random.nextGaussian() * stdDev;
         return (int) Math.max(min, Math.min(max, value));
+    }
+    
+    /**
+     * Simple cache entry with expiration.
+     */
+    private static class CacheEntry {
+        private final String value;
+        private final long expiresAt;
+        
+        CacheEntry(String value, Duration ttl) {
+            this.value = value;
+            this.expiresAt = System.currentTimeMillis() + ttl.toMillis();
+        }
+        
+        boolean isExpired() {
+            return System.currentTimeMillis() > expiresAt;
+        }
     }
 }

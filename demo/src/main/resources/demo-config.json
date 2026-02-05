@@ -1,0 +1,66 @@
+{
+  "registry": {
+    "signalStores": [
+      {
+        "name": "latency",
+        "type": "GAUGE",
+        "bucketSeconds": 5,
+        "maxBuckets": 6,
+        "aggregations": ["P50", "P95", "P99", "AVG"],
+        "processor": {
+          "dropNegative": true,
+          "maxValue": 10000
+        }
+      }
+    ]
+  },
+  "evaluator": {
+    "rules": [
+      {
+        "metricName": "latency",
+        "percentile": "P95",
+        "windowSeconds": 5,
+        "weight": 1.0,
+        "stepFunction": {
+          "thresholds": [
+            { "value": 120, "score": 1.0 },
+            { "value": 200, "score": 0.75 },
+            { "value": 400, "score": 0.5 },
+            { "value": 600, "score": 0.25 },
+            { "value": 800, "score": 0.0 }
+          ],
+          "interpolation": "LINEAR"
+        }
+      }
+    ],
+    "aggregation": "WEIGHTED_AVG"
+  },
+  "decisions": {
+    "cacheTtl": {
+      "type": "DURATION",
+      "steps": [
+        { "healthMin": 1.0, "value": 10 },
+        { "healthMin": 0.75, "value": 60 },
+        { "healthMin": 0.5, "value": 120 },
+        { "healthMin": 0.25, "value": 180 },
+        { "healthMin": 0.0, "value": 300 }
+      ],
+      "interpolation": "LINEAR"
+    },
+    "loadShedding": {
+      "type": "DOUBLE",
+      "steps": [
+        { "healthMin": 0.95, "value": 0.0 },
+        { "healthMin": 0.5, "value": 0.3 },
+        { "healthMin": 0.25, "value": 0.6 },
+        { "healthMin": 0.0, "value": 0.95 }
+      ],
+      "interpolation": "LINEAR"
+    }
+  },
+  "metadata": {
+    "version": "1.0",
+    "name": "lifecache-demo",
+    "description": "Demo configuration for thundering herd simulation"
+  }
+}

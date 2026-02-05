@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="io.github.lifecache.LifecacheTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-02-02T08:47:42.526Z" hostname="Weihuas-MacBook-Air.local" time="0.566">
+<testsuite name="io.github.lifecache.LifecacheTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-02-05T09:48:26.052Z" hostname="Weihuas-MacBook-Air.local" time="0.497">
   <properties/>
-  <testcase name="testStepFunctionBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.179"/>
+  <testcase name="testStepFunctionBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.161"/>
   <testcase name="testCriticalSystem()" classname="io.github.lifecache.LifecacheTest" time="0.003"/>
-  <testcase name="testShouldDrop()" classname="io.github.lifecache.LifecacheTest" time="0.155"/>
+  <testcase name="testShouldDrop()" classname="io.github.lifecache.LifecacheTest" time="0.157"/>
   <testcase name="testHealthySystem()" classname="io.github.lifecache.LifecacheTest" time="0.001"/>
   <testcase name="testStressedSystem()" classname="io.github.lifecache.LifecacheTest" time="0.001"/>
-  <testcase name="testMetrics()" classname="io.github.lifecache.LifecacheTest" time="0.002"/>
-  <testcase name="testCustomBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.003"/>
-  <testcase name="testSigmoidBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.158"/>
-  <testcase name="testSampleAutoCloseable()" classname="io.github.lifecache.LifecacheTest" time="0.056"/>
-  <testcase name="testBuilderDefaults()" classname="io.github.lifecache.LifecacheTest" time="0.0"/>
+  <testcase name="testMetrics()" classname="io.github.lifecache.LifecacheTest" time="0.001"/>
+  <testcase name="testCustomBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.001"/>
+  <testcase name="testSigmoidBreakdown()" classname="io.github.lifecache.LifecacheTest" time="0.164"/>
   <system-out><![CDATA[]]></system-out>
   <system-err><![CDATA[]]></system-err>
 </testsuite>

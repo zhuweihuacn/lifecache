@@ -1,9 +1,9 @@
 package io.github.lifecache;
 
-import io.github.lifecache.metrics.MetricsCollector;
-import io.github.lifecache.metrics.SlidingWindowCollector;
-import io.github.lifecache.policy.HealthPolicy;
-import io.github.lifecache.policy.StepFunctionPolicy;
+import io.github.lifecache.decision.*;
+import io.github.lifecache.metrics.*;
+import io.github.lifecache.policy.QoSEvaluator;
+import io.github.lifecache.policy.StepFunctionEvaluator;
 
 import java.time.Duration;
 import java.util.*;
@@ -15,36 +15,49 @@ import java.util.function.Function;
  * <h2>Quick Start</h2>
  * <pre>{@code
  * Lifecache lifecache = Lifecache.builder()
- *     .latencyThreshold(100, 1.0)   // P95 < 100ms = healthy
- *     .latencyThreshold(300, 0.5)   // P95 = 300ms = degraded
- *     .latencyThreshold(500, 0.0)   // P95 > 500ms = critical
- *     .staleness(Lifecache.linear(
- *         Duration.ofSeconds(10),    // min TTL (healthy)
- *         Duration.ofMinutes(30)     // max TTL (critical)
+ *     .metricsWindow(Duration.ofSeconds(60))
+ *     .metricName("latency")
+ *     .aggregation(Aggregation.P95)
+ *     .threshold(100, 1.0)   // P95 < 100ms = healthy
+ *     .threshold(300, 0.5)   // P95 = 300ms = degraded
+ *     .threshold(500, 0.0)   // P95 > 500ms = critical
+ *     .rule("allowStaleness", DecisionRule.stepsWithInterpolation(
+ *         DecisionRule.step(1.0, Duration.ofSeconds(10)),
+ *         DecisionRule.step(0.0, Duration.ofMinutes(30))
+ *     ))
+ *     .rule("throttleRate", DecisionRule.stepsWithDoubleInterpolation(
+ *         DecisionRule.step(0.5, 0.0),
+ *         DecisionRule.step(0.0, 0.9)
  *     ))
  *     .build();
  * 
- * // Record latency
- * try (var sample = lifecache.startSample()) {
- *     result = callBackend();
- * }
+ * // Record metrics
+ * lifecache.record(MetricSample.of("latency", 150));
  * 
- * // Get adaptive TTL
- * Duration ttl = lifecache.getStaleness();
+ * // Get adaptive decisions (each rule generates one typed result)
+ * QoSDecision<Duration> ttlDecision = lifecache.getDecision("allowStaleness");
+ * Duration ttl = ttlDecision.value();
+ * 
+ * QoSDecision<Double> throttleDecision = lifecache.getDecision("throttleRate");
+ * if (lifecache.shouldThrottle()) { return fallback; }
  * }</pre>
  * 
  * @author Weihua Zhu
  */
 public class Lifecache implements AutoCloseable {
     
-    private final MetricsCollector metricsCollector;
-    private final HealthPolicy healthPolicy;
+    private final MetricsRegistry metricsRegistry;
+    private final QoSEvaluator qosEvaluator;
     private final Map<String, Function<Double, ?>> breakdowns;
     
+    // Generic decision rules (JSON-configurable)
+    private final Map<String, DecisionRule<?>> decisionRules;
+    
     private Lifecache(Builder builder) {
-        this.metricsCollector = builder.metricsCollector;
-        this.healthPolicy = builder.healthPolicy;
+        this.metricsRegistry = builder.metricsRegistry;
+        this.qosEvaluator = builder.qosEvaluator;
         this.breakdowns = new HashMap<>(builder.breakdowns);
+        this.decisionRules = new HashMap<>(builder.decisionRules);
     }
     
     // ============ Factory Methods for Staleness ============
@@ -149,20 +162,13 @@ public class Lifecache implements AutoCloseable {
         return new Builder();
     }
     
-    // ============ Latency Recording ============
+    // ============ Metrics Recording ============
     
     /**
-     * Start a latency sample. Use in try-with-resources.
+     * Record a metric sample.
      */
-    public MetricsCollector.Sample startSample() {
-        return metricsCollector.startSample();
-    }
-    
-    /**
-     * Record a latency sample directly.
-     */
-    public void record(double latencyMs) {
-        metricsCollector.record(latencyMs);
+    public void record(MetricSample sample) {
+        metricsRegistry.record(sample);
     }
     
     // ============ Core Output ============
@@ -184,7 +190,59 @@ public class Lifecache implements AutoCloseable {
      * }</pre>
      */
     public double getHealthScore() {
-        return healthPolicy.evaluate(metricsCollector);
+        return qosEvaluator.evaluate();
+    }
+    
+    // ============ Decision API (using generic DecisionRule) ============
+    
+    /**
+     * Get decision for a specific rule.
+     * 
+     * <pre>{@code
+     * QoSDecision<Duration> ttlDecision = lifecache.getDecision("allowStaleness");
+     * Duration ttl = ttlDecision.value();
+     * 
+     * QoSDecision<Double> throttleDecision = lifecache.getDecision("throttleRate");
+     * Double rate = throttleDecision.value();
+     * }</pre>
+     */
+    @SuppressWarnings("unchecked")
+    public <T> QoSDecision<T> getDecision(String ruleName) {
+        DecisionRule<?> rule = decisionRules.get(ruleName);
+        if (rule == null) {
+            throw new IllegalArgumentException("Unknown rule: " + ruleName + 
+                ". Available: " + decisionRules.keySet());
+        }
+        double health = getHealthScore();
+        return (QoSDecision<T>) rule.evaluate(health);
+    }
+    
+    /**
+     * Get a specific decision value (shortcut for getDecision(name).value()).
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T getDecisionValue(String name) {
+        DecisionRule<?> rule = decisionRules.get(name);
+        if (rule == null) {
+            return null;
+        }
+        return (T) rule.apply(getHealthScore());
+    }
+    
+    /**
+     * Convenience: should this request be throttled? (probabilistic based on throttleRate)
+     */
+    public boolean shouldThrottle() {
+        Double rate = getDecisionValue("throttleRate");
+        if (rate == null || rate <= 0) return false;
+        return Math.random() < rate;
+    }
+    
+    /**
+     * Convenience: get current soft TTL.
+     */
+    public Duration getAllowStaleness() {
+        return getDecisionValue("allowStaleness");
     }
     
     // ============ Breakdowns (all derived from healthScore) ============
@@ -245,27 +303,52 @@ public class Lifecache implements AutoCloseable {
         return Collections.unmodifiableSet(breakdowns.keySet());
     }
     
-    // ============ Metrics ============
+    // ============ Accessors ============
     
     /**
-     * Get current P95 latency
+     * Get underlying metrics registry (for advanced use).
      */
-    public double getP95Latency() {
-        return metricsCollector.getP95();
+    public MetricsRegistry getMetricsRegistry() {
+        return metricsRegistry;
     }
     
     /**
-     * Get metrics snapshot (for debugging/monitoring)
+     * Get current metrics snapshot.
      */
     public Metrics getMetrics() {
+        double health = getHealthScore();
+        Duration window = Duration.ofSeconds(30); // Default reading window
+        
+        Double p50 = metricsRegistry.read("latency", Aggregation.P50, window);
+        Double p95 = metricsRegistry.read("latency", Aggregation.P95, window);
+        Double p99 = metricsRegistry.read("latency", Aggregation.P99, window);
+        
         return new Metrics(
-            metricsCollector.getP50(),
-            metricsCollector.getP95(),
-            metricsCollector.getP99(),
-            metricsCollector.getAverage(),
-            metricsCollector.getSampleCount(),
-            getHealthScore()
+            p50 != null ? p50 : 0.0,
+            p95 != null ? p95 : 0.0,
+            p99 != null ? p99 : 0.0,
+            health
         );
+    }
+    
+    /**
+     * Metrics snapshot with latency percentiles and health score.
+     */
+    public record Metrics(
+        double p50Latency,
+        double p95Latency,
+        double p99Latency,
+        double healthScore
+    ) {
+        /**
+         * Get health status string.
+         */
+        public String getStatus() {
+            if (healthScore >= 0.9) return "HEALTHY";
+            if (healthScore >= 0.7) return "DEGRADED";
+            if (healthScore >= 0.4) return "STRESSED";
+            return "CRITICAL";
+        }
     }
     
     @Override
@@ -273,36 +356,22 @@ public class Lifecache implements AutoCloseable {
         // No resources to clean up in base implementation
     }
     
-    // ============ Records ============
-    
-    /**
-     * Metrics snapshot (for debugging/monitoring only)
-     */
-    public record Metrics(
-        double p50Latency,
-        double p95Latency,
-        double p99Latency,
-        double avgLatency,
-        int sampleCount,
-        double healthScore
-    ) {
-        public String getStatus() {
-            if (healthScore >= 0.8) return "HEALTHY";
-            if (healthScore >= 0.5) return "DEGRADED";
-            if (healthScore >= 0.2) return "STRESSED";
-            return "CRITICAL";
-        }
-    }
-    
     // ============ Builder ============
     
     public static class Builder {
-        private MetricsCollector metricsCollector;
-        private HealthPolicy healthPolicy;
+        private MetricsRegistry metricsRegistry;
+        private QoSEvaluator qosEvaluator;
         private Duration metricsWindow = Duration.ofSeconds(10);
         
-        private final List<double[]> latencyThresholds = new ArrayList<>();
+        // Evaluator config
+        private String metricName;
+        private Aggregation aggregation;
+        private final List<double[]> thresholds = new ArrayList<>();
+        
         private final Map<String, Function<Double, ?>> breakdowns = new HashMap<>();
+        
+        // Generic decision rules (JSON-configurable)
+        private final Map<String, DecisionRule<?>> decisionRules = new HashMap<>();
         
         /**
          * Register a breakdown function with user-defined name.
@@ -334,13 +403,29 @@ public class Lifecache implements AutoCloseable {
         }
         
         /**
-         * Add a latency threshold for health calculation.
+         * Set metric name to evaluate.
+         */
+        public Builder metricName(String name) {
+            this.metricName = name;
+            return this;
+        }
+        
+        /**
+         * Set aggregation type (P95, P99, AVG, etc.).
+         */
+        public Builder aggregation(Aggregation agg) {
+            this.aggregation = agg;
+            return this;
+        }
+        
+        /**
+         * Add a threshold for health calculation.
          * 
-         * @param latencyMs P95 latency threshold in milliseconds
+         * @param value metric value threshold
          * @param healthScore health score at this threshold (1.0 = healthy, 0.0 = critical)
          */
-        public Builder latencyThreshold(double latencyMs, double healthScore) {
-            latencyThresholds.add(new double[]{latencyMs, healthScore});
+        public Builder threshold(double value, double healthScore) {
+            thresholds.add(new double[]{value, healthScore});
             return this;
         }
         
@@ -353,33 +438,112 @@ public class Lifecache implements AutoCloseable {
         }
         
         /**
-         * Use custom metrics collector
+         * Use custom metrics registry
          */
-        public Builder metricsCollector(MetricsCollector collector) {
-            this.metricsCollector = collector;
+        public Builder metricsRegistry(MetricsRegistry registry) {
+            this.metricsRegistry = registry;
             return this;
         }
         
         /**
-         * Use custom health policy
+         * Use custom QoS evaluator
          */
-        public Builder healthPolicy(HealthPolicy policy) {
-            this.healthPolicy = policy;
+        public Builder qosEvaluator(QoSEvaluator evaluator) {
+            this.qosEvaluator = evaluator;
             return this;
         }
         
+        // ============ Generic Decision Rules ============
+        
+        /**
+         * Add a decision rule by name.
+         * 
+         * <pre>{@code
+         * .rule("allowStaleness", DecisionRule.stepsWithInterpolation(step(1.0, 30s), step(0.0, 30min)))
+         * .rule("throttleRate", DecisionRule.stepsWithDoubleInterpolation(step(0.5, 0.0), step(0.0, 0.9)))
+         * .rule("priority", DecisionRule.steps(step(0.8, 1), step(0.5, 2), step(0.0, 3)))
+         * }</pre>
+         */
+        public <T> Builder rule(String name, DecisionRule<T> rule) {
+            this.decisionRules.put(name, rule);
+            return this;
+        }
+        
+        /**
+         * Add all rules from a map.
+         */
+        public Builder rules(Map<String, DecisionRule<?>> rules) {
+            this.decisionRules.putAll(rules);
+            return this;
+        }
+        
+        /**
+         * Set throttle rule (convenience for .rule("throttleRate", ...))
+         * 
+         * @param startThreshold health below which throttling starts
+         * @param maxRate maximum throttle rate at health=0
+         */
+        public Builder throttle(double startThreshold, double maxRate) {
+            return rule("throttleRate", DecisionRule.stepsWithDoubleInterpolation(
+                DecisionRule.step(startThreshold, 0.0),
+                DecisionRule.step(0.0, maxRate)
+            ));
+        }
+        
+        /**
+         * Set AllowStaleness rule (convenience for .rule("allowStaleness", ...))
+         * 
+         * @param minTTL TTL when healthy
+         * @param maxTTL TTL when critical
+         */
+        public Builder allowStaleness(Duration minTTL, Duration maxTTL) {
+            return rule("allowStaleness", DecisionRule.stepsWithInterpolation(
+                DecisionRule.step(1.0, minTTL),
+                DecisionRule.step(0.0, maxTTL)
+            ));
+        }
+        
         public Lifecache build() {
-            if (metricsCollector == null) {
-                metricsCollector = new SlidingWindowCollector(metricsWindow);
+            // Validate required fields
+            if (metricName == null) {
+                throw new IllegalStateException("metricName is required");
+            }
+            if (aggregation == null) {
+                throw new IllegalStateException("aggregation is required");
+            }
+            if (thresholds.isEmpty()) {
+                throw new IllegalStateException("At least one threshold is required");
             }
             
-            if (healthPolicy == null) {
-                if (latencyThresholds.isEmpty()) {
-                    healthPolicy = new StepFunctionPolicy();
-                } else {
-                    double[][] arr = latencyThresholds.toArray(new double[0][]);
-                    healthPolicy = new StepFunctionPolicy(arr);
-                }
+            if (metricsRegistry == null) {
+                metricsRegistry = new SlidingWindowRegistry(metricsWindow);
+            }
+            
+            if (qosEvaluator == null) {
+                double[][] arr = thresholds.toArray(new double[0][]);
+                qosEvaluator = StepFunctionEvaluator.builder()
+                    .metricsReader(metricsRegistry)
+                    .metricName(metricName)
+                    .aggregation(aggregation)
+                    .window(metricsWindow)
+                    .thresholds(arr)
+                    .build();
+            }
+            
+            // Add defaults if not configured
+            if (!decisionRules.containsKey("allowStaleness")) {
+                decisionRules.put("allowStaleness", DecisionRule.stepsWithInterpolation(
+                    DecisionRule.step(1.0, Duration.ofMinutes(1)),
+                    DecisionRule.step(0.5, Duration.ofMinutes(5)),
+                    DecisionRule.step(0.0, Duration.ofMinutes(30))
+                ));
+            }
+            if (!decisionRules.containsKey("throttleRate")) {
+                decisionRules.put("throttleRate", DecisionRule.stepsWithDoubleInterpolation(
+                    DecisionRule.step(0.5, 0.0),
+                    DecisionRule.step(0.3, 0.5),
+                    DecisionRule.step(0.0, 0.9)
+                ));
             }
             
             return new Lifecache(this);

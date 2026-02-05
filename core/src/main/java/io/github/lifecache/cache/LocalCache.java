@@ -117,10 +117,7 @@ public class LocalCache<V> {
         }
         
         // Cache miss or expired - compute new value
-        V value;
-        try (var sample = lifecache.startSample()) {
-            value = loader.get();
-        }
+        V value = loader.get();
         
         // Evict if necessary before adding new entry
         if (maxSize > 0 && cache.size() >= maxSize) {

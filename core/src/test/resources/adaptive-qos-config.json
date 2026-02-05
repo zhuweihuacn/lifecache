@@ -1,0 +1,176 @@
+{
+  "registry": {
+    "signalStores": [
+      {
+        "name": "grpc_latency",
+        "type": "GAUGE",
+        "bucketSeconds": 10,
+        "maxBuckets": 6,
+        "aggregations": ["P50", "P95", "P99", "AVG"],
+        "processor": {
+          "dropNegative": true,
+          "maxValue": 60000
+        }
+      },
+      {
+        "name": "inference_latency",
+        "type": "GAUGE",
+        "bucketSeconds": 10,
+        "maxBuckets": 12,
+        "aggregations": ["P95", "P99"],
+        "processor": {
+          "dropNegative": true,
+          "maxValue": 120000
+        }
+      },
+      {
+        "name": "request_count",
+        "type": "COUNTER",
+        "bucketSeconds": 10,
+        "maxBuckets": 6,
+        "aggregations": ["SUM", "RATE", "COUNT"],
+        "processor": {
+          "dropNegative": true
+        }
+      },
+      {
+        "name": "error_count",
+        "type": "COUNTER",
+        "bucketSeconds": 10,
+        "maxBuckets": 30,
+        "aggregations": ["SUM"],
+        "processor": {
+          "dropNegative": true
+        }
+      },
+      {
+        "name": "success_count",
+        "type": "COUNTER",
+        "bucketSeconds": 10,
+        "maxBuckets": 30,
+        "aggregations": ["SUM"],
+        "processor": {
+          "dropNegative": true
+        }
+      }
+    ]
+  },
+  "evaluator": {
+    "rules": [
+      {
+        "metricName": "grpc_latency",
+        "percentile": "P95",
+        "windowSeconds": 30,
+        "weight": 0.5,
+        "stepFunction": {
+          "thresholds": [
+            { "value": 50, "score": 1.0 },
+            { "value": 100, "score": 0.9 },
+            { "value": 150, "score": 0.75 },
+            { "value": 200, "score": 0.5 },
+            { "value": 300, "score": 0.25 },
+            { "value": 500, "score": 0.0 }
+          ],
+          "interpolation": "LINEAR"
+        }
+      },
+      {
+        "metricName": "inference_latency",
+        "percentile": "P95",
+        "windowSeconds": 60,
+        "weight": 0.3,
+        "stepFunction": {
+          "thresholds": [
+            { "value": 100, "score": 1.0 },
+            { "value": 200, "score": 0.8 },
+            { "value": 500, "score": 0.5 },
+            { "value": 1000, "score": 0.0 }
+          ],
+          "interpolation": "LINEAR"
+        }
+      },
+      {
+        "metricName": "error_rate",
+        "isDerived": true,
+        "weight": 0.2,
+        "stepFunction": {
+          "thresholds": [
+            { "value": 0.001, "score": 1.0 },
+            { "value": 0.01, "score": 0.8 },
+            { "value": 0.05, "score": 0.5 },
+            { "value": 0.1, "score": 0.0 }
+          ],
+          "interpolation": "LINEAR"
+        }
+      }
+    ],
+    "aggregation": "WEIGHTED_AVG"
+  },
+  "decisions": {
+    "allowStaleness": {
+      "type": "DURATION",
+      "steps": [
+        { "healthMin": 1.0, "value": 30 },
+        { "healthMin": 0.8, "value": 60 },
+        { "healthMin": 0.5, "value": 300 },
+        { "healthMin": 0.3, "value": 900 },
+        { "healthMin": 0.0, "value": 1800 }
+      ],
+      "interpolation": "LINEAR"
+    },
+    "throttleRate": {
+      "type": "DOUBLE",
+      "steps": [
+        { "healthMin": 0.5, "value": 0.0 },
+        { "healthMin": 0.3, "value": 0.3 },
+        { "healthMin": 0.1, "value": 0.7 },
+        { "healthMin": 0.0, "value": 0.9 }
+      ],
+      "interpolation": "LINEAR"
+    },
+    "priority": {
+      "type": "INTEGER",
+      "steps": [
+        { "healthMin": 0.8, "value": 1 },
+        { "healthMin": 0.5, "value": 2 },
+        { "healthMin": 0.2, "value": 3 },
+        { "healthMin": 0.0, "value": 4 }
+      ],
+      "interpolation": "STEP"
+    },
+    "enableCache": {
+      "type": "BOOLEAN",
+      "steps": [
+        { "healthMin": 0.3, "value": true },
+        { "healthMin": 0.0, "value": false }
+      ],
+      "interpolation": "STEP"
+    },
+    "retryLimit": {
+      "type": "INTEGER",
+      "steps": [
+        { "healthMin": 0.8, "value": 3 },
+        { "healthMin": 0.5, "value": 2 },
+        { "healthMin": 0.0, "value": 1 }
+      ],
+      "interpolation": "STEP"
+    }
+  },
+  "derivedMetrics": {
+    "error_rate": {
+      "formula": "error_count / (error_count + success_count)",
+      "aggregation": "SUM",
+      "windowSeconds": 300
+    },
+    "cache_hit_rate": {
+      "formula": "cache_hits / (cache_hits + cache_misses)",
+      "aggregation": "SUM",
+      "windowSeconds": 60
+    }
+  },
+  "metadata": {
+    "version": "2.0",
+    "name": "production-config",
+    "description": "Production configuration with GAUGE and COUNTER metrics"
+  }
+}

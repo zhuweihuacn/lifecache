@@ -148,4 +148,13 @@ public class ConcurrencyLatencySimulator {
         long sleepTime = calculateLatency(concurrency);
         Thread.sleep(sleepTime);
     }
+    
+    /**
+     * Sleep and return the latency for recording.
+     */
+    public long sleepAndGetLatency(int concurrency) throws InterruptedException {
+        long sleepTime = calculateLatency(concurrency);
+        Thread.sleep(sleepTime);
+        return sleepTime;
+    }
 }
